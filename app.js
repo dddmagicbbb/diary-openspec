@@ -78,6 +78,20 @@ const listEl = document.getElementById('entry-list');
 
 let entries = loadEntries();
 
+// ---- 수정 상태 (add-diary-edit) ----
+// 수정 중인 기록의 id와 수정 입력칸에 적던 내용. 목록을 다시 그려도 유지된다.
+let editingId = null;
+let editDraft = '';
+
+// 읽어 온 기록 보정: updatedAt이 문자열이 아니면 그 필드만 버리고, id가 없으면 새로 붙인다.
+// 첫 버전 형식({ id, text, createdAt })은 그대로 통과한다.
+entries = entries.map((entry) => {
+  const fixed = { ...entry };
+  if ('updatedAt' in fixed && typeof fixed.updatedAt !== 'string') delete fixed.updatedAt;
+  if (typeof fixed.id !== 'string' || fixed.id === '') fixed.id = createEntry(fixed.text).id;
+  return fixed;
+});
+
 function renderList() {
   listEl.replaceChildren();
 
@@ -98,11 +112,20 @@ function renderList() {
     time.dateTime = entry.createdAt;
     time.textContent = displayTime(entry.createdAt);
 
+    // 수정 중인 기록은 수정 줄로 그린다.
+    if (entry.id === editingId) {
+      li.append(time, buildEditForm(entry));
+      listEl.append(li);
+      continue;
+    }
+
     const text = document.createElement('span');
     text.className = 'min-w-0 break-words';
     text.textContent = entry.text;
 
     li.append(time, text);
+    if (entry.updatedAt) time.after(buildEditedMark());
+    li.append(buildEditButton(entry));
     listEl.append(li);
   }
 }
@@ -139,3 +162,158 @@ formEl.addEventListener('submit', (event) => {
 
 todayEl.textContent = formatDate(new Date());
 renderList();
+
+// ---- 수정 기능 (add-diary-edit) ----
+
+const SAVE_FAILED_MESSAGE = '저장하지 못했습니다. 브라우저 저장 공간 설정을 확인해주세요.';
+
+function buildEditedMark() {
+  const mark = document.createElement('span');
+  mark.className = 'shrink-0 text-xs leading-6 text-stone-400';
+  mark.textContent = '(수정됨)';
+  return mark;
+}
+
+function buildEditButton(entry) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.dataset.action = 'edit';
+  button.dataset.id = entry.id;
+  button.className =
+    'ml-auto shrink-0 rounded px-2 text-sm leading-6 text-stone-500 hover:bg-stone-100 hover:text-stone-800 focus:outline-none focus:ring-2 focus:ring-stone-300';
+  button.textContent = '수정';
+  return button;
+}
+
+function buildEditForm(entry) {
+  const form = document.createElement('form');
+  form.dataset.role = 'edit-form';
+  form.dataset.id = entry.id;
+  form.className = 'flex min-w-0 flex-1 gap-2';
+  form.noValidate = true;
+
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.maxLength = 100;
+  input.autocomplete = 'off';
+  input.value = editDraft;
+  input.dataset.role = 'edit-input';
+  input.setAttribute('aria-label', '기록 수정');
+  input.className =
+    'min-w-0 flex-1 rounded border border-stone-300 px-2 leading-6 focus:border-stone-500 focus:outline-none focus:ring-2 focus:ring-stone-300';
+
+  const save = document.createElement('button');
+  save.type = 'submit';
+  save.className =
+    'shrink-0 rounded bg-stone-800 px-2 text-sm leading-6 text-white hover:bg-stone-700 focus:outline-none focus:ring-2 focus:ring-stone-400';
+  save.textContent = '저장';
+
+  const cancel = document.createElement('button');
+  cancel.type = 'button';
+  cancel.dataset.action = 'cancel';
+  cancel.dataset.id = entry.id;
+  cancel.className =
+    'shrink-0 rounded px-2 text-sm leading-6 text-stone-500 hover:bg-stone-100 focus:outline-none focus:ring-2 focus:ring-stone-300';
+  cancel.textContent = '취소';
+
+  form.append(input, save, cancel);
+  return form;
+}
+
+function getEditInput() {
+  return listEl.querySelector('input[data-role="edit-input"]');
+}
+
+function focusEditButton(id) {
+  const button = [...listEl.querySelectorAll('button[data-action="edit"]')].find(
+    (b) => b.dataset.id === id
+  );
+  if (button) button.focus();
+}
+
+function startEdit(id) {
+  const entry = entries.find((e) => e.id === id);
+  if (!entry) return;
+  editingId = id;
+  editDraft = entry.text;
+  renderList();
+  const input = getEditInput();
+  if (input) {
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+  }
+}
+
+function endEdit(id) {
+  editingId = null;
+  editDraft = '';
+  renderList();
+  focusEditButton(id);
+}
+
+function saveEdit(id) {
+  const input = getEditInput();
+  const text = (input ? input.value : editDraft).trim();
+
+  if (text === '') {
+    alert(EMPTY_INPUT_MESSAGE);
+    const again = getEditInput();
+    if (again) again.focus();
+    return;
+  }
+
+  const entry = entries.find((e) => e.id === id);
+  if (!entry) {
+    endEdit(id);
+    return;
+  }
+  if (text === entry.text) {
+    endEdit(id);
+    return;
+  }
+
+  const updatedAt = toLocalIsoString(new Date());
+  const next = entries.map((e) => (e.id === id ? { ...e, text, updatedAt } : e));
+  if (!saveEntries(next)) {
+    alert(SAVE_FAILED_MESSAGE);
+    const again = getEditInput();
+    if (again) again.focus();
+    return;
+  }
+
+  entries = next;
+  endEdit(id);
+}
+
+// 한글 등 IME 조합 중 Enter인지 판단한다(수정 입력칸용).
+function isComposingEnter(event) {
+  return event.key === 'Enter' && (event.isComposing || event.keyCode === 229);
+}
+
+listEl.addEventListener('click', (event) => {
+  const button = event.target.closest('button[data-action]');
+  if (!button || !listEl.contains(button)) return;
+  if (button.dataset.action === 'edit') startEdit(button.dataset.id);
+  else if (button.dataset.action === 'cancel') endEdit(button.dataset.id);
+});
+
+listEl.addEventListener('input', (event) => {
+  if (event.target.dataset.role === 'edit-input') editDraft = event.target.value;
+});
+
+listEl.addEventListener('keydown', (event) => {
+  if (event.target.dataset.role !== 'edit-input') return;
+  if (isComposingEnter(event)) {
+    event.preventDefault();
+  } else if (event.key === 'Escape') {
+    event.preventDefault();
+    endEdit(editingId);
+  }
+});
+
+listEl.addEventListener('submit', (event) => {
+  const form = event.target;
+  if (form.dataset.role !== 'edit-form') return;
+  event.preventDefault();
+  saveEdit(form.dataset.id);
+});
